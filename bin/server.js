@@ -193,6 +193,8 @@ function startLanguageServer(connection, config, clientId) {
           resolveProvider: true,
           triggerCharacters: ['.'],
         },
+        // Advertise code action support (returns no actions by default)
+        codeActionProvider: true,
       },
     };
   });
@@ -251,7 +253,7 @@ function startLanguageServer(connection, config, clientId) {
   });
 
   // Helper to initialize/reinitialize MongoDB service
-  function initializeMongoDBService(cfg) {
+  async function initializeMongoDBService(cfg) {
     if (!mongoDBService) {
       if (config.verbose) {
         connection.console.log(`[Client ${clientId}] MongoDB service not yet created, skipping initialization`);
@@ -270,6 +272,22 @@ function startLanguageServer(connection, config, clientId) {
 
     if (cfg.verbose) {
       connection.console.log(`[Client ${clientId}] MongoDB service initialized with URI: ${cfg.connectionString?.replace(/:[^:@]+@/, ':***@')}`);
+    }
+
+    // Automatically connect to MongoDB if connection string is provided
+    if (cfg.connectionString) {
+      try {
+        await mongoDBService.activeConnectionChanged({
+          connectionId: initConfig.connectionId,
+          connectionString: cfg.connectionString,
+          connectionOptions: cfg.connectionOptions || {}
+        });
+        if (cfg.verbose) {
+          connection.console.log(`[Client ${clientId}] Successfully connected to MongoDB`);
+        }
+      } catch (error) {
+        connection.console.error(`[Client ${clientId}] Failed to connect to MongoDB: ${error.message}`);
+      }
     }
   }
 
@@ -296,6 +314,11 @@ function startLanguageServer(connection, config, clientId) {
   });
 
   connection.onCompletionResolve((item) => item);
+
+  // Return no code actions to avoid method-not-found errors from clients
+  connection.onRequest('textDocument/codeAction', () => {
+    return [];
+  });
 
   // Custom request handlers
   connection.onRequest(ServerCommands.EXECUTE_CODE_FROM_PLAYGROUND, (params, token) => {

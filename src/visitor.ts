@@ -43,6 +43,52 @@ export interface NamespaceState {
   collectionName: string | null;
 }
 
+export interface CollectionReference {
+  collectionName: string;
+  databaseName: string | null;
+  location: {
+    start: { line: number; character: number };
+    end: { line: number; character: number };
+  };
+}
+
+export interface FieldReference {
+  fieldName: string;
+  collectionName: string | null;
+  databaseName: string | null;
+  location: {
+    start: { line: number; character: number };
+    end: { line: number; character: number };
+  };
+  context: 'find' | 'aggregate' | 'update' | 'other';
+}
+
+export interface OperatorReference {
+  operator: string;
+  location: {
+    start: { line: number; character: number };
+    end: { line: number; character: number };
+  };
+  context: 'stage' | 'query' | 'aggregation' | 'other';
+}
+
+export interface MethodReference {
+  method: string;
+  target: 'db' | 'collection' | 'cursor' | 'other';
+  location: {
+    start: { line: number; character: number };
+    end: { line: number; character: number };
+  };
+}
+
+export interface DiagnosticReferences {
+  collections: CollectionReference[];
+  fields: FieldReference[];
+  operators: OperatorReference[];
+  methods: MethodReference[];
+  databaseName: string | null;
+}
+
 export class Visitor {
   _state: CompletionState | NamespaceState | {};
   _selection: VisitorSelection;
@@ -710,5 +756,217 @@ export class Visitor {
     ) {
       this._state.isStreamProcessorSymbol = true;
     }
+  }
+
+  /**
+   * Parse AST to extract all references for diagnostic purposes
+   */
+  parseASTForDiagnostics(textFromEditor = ''): DiagnosticReferences {
+    const references: DiagnosticReferences = {
+      collections: [],
+      fields: [],
+      operators: [],
+      methods: [],
+      databaseName: null,
+    };
+
+    let ast;
+    try {
+      ast = parser.parse(textFromEditor, {
+        sourceType: 'module',
+      });
+    } catch (error) {
+      return references;
+    }
+
+    if (!ast) return references;
+
+    // Track current database and collection context
+    let currentDatabase: string | null = null;
+    let currentCollection: string | null = null;
+
+    traverse(ast, {
+      // Extract database name from use() calls
+      CallExpression(path: NodePath) {
+        const node = path.node as t.CallExpression;
+
+        // Check for use('dbname')
+        if (
+          node.callee.type === 'Identifier' &&
+          node.callee.name === 'use' &&
+          node.arguments.length === 1 &&
+          node.arguments[0].type === 'StringLiteral'
+        ) {
+          currentDatabase = node.arguments[0].value;
+          references.databaseName = currentDatabase;
+        }
+      },
+
+      MemberExpression(path: NodePath) {
+        const node = path.node as t.MemberExpression;
+
+        // Extract collection references: db.collectionName or db['collectionName']
+        if (
+          node.object.type === 'Identifier' &&
+          node.object.name === 'db'
+        ) {
+          let collectionName: string | null = null;
+
+          if (node.property.type === 'Identifier') {
+            collectionName = node.property.name;
+          } else if (node.property.type === 'StringLiteral') {
+            collectionName = node.property.value;
+          }
+
+          if (collectionName && node.loc) {
+            // Update current collection context
+            currentCollection = collectionName;
+
+            references.collections.push({
+              collectionName,
+              databaseName: currentDatabase,
+              location: {
+                start: {
+                  line: node.loc.start.line - 1,
+                  character: node.loc.start.column
+                },
+                end: {
+                  line: node.loc.end.line - 1,
+                  character: node.loc.end.column
+                },
+              },
+            });
+          }
+
+          // Extract method calls on db
+          const parent = path.parent;
+          if (parent.type === 'CallExpression' && parent.callee === node) {
+            if (node.property.type === 'Identifier' && node.loc) {
+              references.methods.push({
+                method: node.property.name,
+                target: 'db',
+                location: {
+                  start: {
+                    line: node.loc.start.line - 1,
+                    character: node.loc.start.column
+                  },
+                  end: {
+                    line: node.loc.end.line - 1,
+                    character: node.loc.end.column
+                  },
+                },
+              });
+            }
+          }
+        }
+
+        // Extract collection method calls
+        if (
+          node.object.type === 'MemberExpression' &&
+          node.object.object.type === 'Identifier' &&
+          node.object.object.name === 'db' &&
+          node.property.type === 'Identifier' &&
+          node.loc
+        ) {
+          const parent = path.parent;
+          if (parent.type === 'CallExpression' && parent.callee === node) {
+            references.methods.push({
+              method: node.property.name,
+              target: 'collection',
+              location: {
+                start: {
+                  line: node.loc.start.line - 1,
+                  character: node.loc.start.column
+                },
+                end: {
+                  line: node.loc.end.line - 1,
+                  character: node.loc.end.column
+                },
+              },
+            });
+          }
+        }
+      },
+
+      ObjectProperty(path: NodePath) {
+        const node = path.node as t.ObjectProperty;
+
+        // Extract field references and operators
+        if (node.key.type === 'Identifier' && node.loc) {
+          const keyName = node.key.name;
+
+          // Check if it's an operator (starts with $)
+          if (keyName.startsWith('$')) {
+            // Determine context
+            let context: 'stage' | 'query' | 'aggregation' | 'other' = 'other';
+
+            // Check if we're in an array (likely aggregate pipeline)
+            let parentArray = path.findParent(p => p.node.type === 'ArrayExpression');
+            if (parentArray) {
+              context = 'stage';
+            } else {
+              // Check if it's inside a value object (query operator)
+              const parentProp = path.findParent(p => p.node.type === 'ObjectProperty');
+              if (parentProp) {
+                context = 'query';
+              }
+            }
+
+            references.operators.push({
+              operator: keyName,
+              location: {
+                start: {
+                  line: node.loc.start.line - 1,
+                  character: node.loc.start.column
+                },
+                end: {
+                  line: node.loc.end.line - 1,
+                  character: node.loc.end.column
+                },
+              },
+              context,
+            });
+          } else {
+            // It's a potential field reference
+            // Determine context based on parent method call
+            let context: 'find' | 'aggregate' | 'update' | 'other' = 'other';
+
+            const callExpression = path.findParent(p => p.node.type === 'CallExpression');
+            if (callExpression && callExpression.node.type === 'CallExpression') {
+              const callee = callExpression.node.callee;
+              if (callee.type === 'MemberExpression' && callee.property.type === 'Identifier') {
+                const methodName = callee.property.name;
+                if (['find', 'findOne'].includes(methodName)) {
+                  context = 'find';
+                } else if (methodName === 'aggregate') {
+                  context = 'aggregate';
+                } else if (['update', 'updateOne', 'updateMany', 'replaceOne'].includes(methodName)) {
+                  context = 'update';
+                }
+              }
+            }
+
+            references.fields.push({
+              fieldName: keyName,
+              collectionName: currentCollection,
+              databaseName: currentDatabase,
+              location: {
+                start: {
+                  line: node.loc.start.line - 1,
+                  character: node.loc.start.column
+                },
+                end: {
+                  line: node.loc.end.line - 1,
+                  character: node.loc.end.column
+                },
+              },
+              context,
+            });
+          }
+        }
+      },
+    });
+
+    return references;
   }
 }

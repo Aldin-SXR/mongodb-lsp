@@ -33,7 +33,7 @@ import type {
 } from './types/playgroundType';
 import type { ClearCompletionsCache } from './types/completionsCache';
 import { Visitor } from './visitor';
-import type { CompletionState, NamespaceState } from './visitor';
+import type { CompletionState, NamespaceState, DiagnosticReferences } from './visitor';
 import LINKS from './utils/links';
 
 import DIAGNOSTIC_CODES from './diagnosticCodes';
@@ -1090,6 +1090,32 @@ export default class MongoDBService {
   provideDiagnostics(textFromEditor: string): Diagnostic[] {
     const lines = textFromEditor.split(/\r?\n/g);
     const diagnostics: Diagnostic[] = [];
+
+    // Check for invalid interactive syntaxes
+    this._checkInvalidInteractiveSyntaxes(lines, diagnostics);
+
+    // Parse AST to extract references for advanced diagnostics
+    const references = this._visitor.parseASTForDiagnostics(textFromEditor);
+
+    // Check for non-existent collections
+    this._checkNonExistentCollections(references, diagnostics);
+
+    // Check for non-existent fields
+    this._checkNonExistentFields(references, diagnostics);
+
+    // Check for invalid operators
+    this._checkInvalidOperators(references, diagnostics);
+
+    // Check for unknown methods
+    this._checkUnknownMethods(references, diagnostics);
+
+    return diagnostics;
+  }
+
+  private _checkInvalidInteractiveSyntaxes(
+    lines: string[],
+    diagnostics: Diagnostic[],
+  ): void {
     const invalidInteractiveSyntaxes = [
       { issue: 'use', fix: "use('VALUE_TO_REPLACE')", default: 'database' },
       { issue: 'show databases', fix: 'db.getMongo().getDBs()' },
@@ -1112,10 +1138,9 @@ export default class MongoDBService {
 
     for (const [i, line] of lines.entries()) {
       for (const item of invalidInteractiveSyntaxes) {
-        const issue = item.issue; // E.g. 'use'.
-        const startCharacter = line.indexOf(issue); // The start index where the issue was found in the string.
+        const issue = item.issue;
+        const startCharacter = line.indexOf(issue);
 
-        // In case of `show logs` exclude `show log` diagnostic issue.
         if (
           issue === 'show log' &&
           line.substring(startCharacter).startsWith('show logs')
@@ -1123,7 +1148,6 @@ export default class MongoDBService {
           continue;
         }
 
-        // In case of `user.authenticate()` do not rise a diagnostic issue.
         if (
           issue === 'use' &&
           !line.substring(startCharacter).startsWith('use ')
@@ -1139,26 +1163,18 @@ export default class MongoDBService {
         let valueToReplaceWith = item.default;
         let fix = item.fix;
 
-        // If there is a default value, it should be used
-        // instead of VALUE_TO_REPLACE placeholder of the `fix` string.
         if (valueToReplaceWith) {
           const words = line.substring(startCharacter).split(' ');
-
-          // The index of the value for `use <value>` and `show log <value>`.
           const valueIndex = issue.split(' ').length;
 
           if (words[valueIndex]) {
-            // The `use ('database')`, `use []`, `use .` are valid JS strings.
             if (
               ['(', '[', '.'].some((word) => words[valueIndex].startsWith(word))
             ) {
               continue;
             }
 
-            // Get the value from a string by removing quotes if any.
             valueToReplaceWith = words[valueIndex].replace(/['";]+/g, '');
-
-            // Add the replacement value and the space between to the total command length.
             endCharacter += words[valueIndex].length + 1;
           }
 
@@ -1178,8 +1194,155 @@ export default class MongoDBService {
         });
       }
     }
+  }
 
-    return diagnostics;
+  private _checkNonExistentCollections(
+    references: DiagnosticReferences,
+    diagnostics: Diagnostic[],
+  ): void {
+    // Only check if we have database connection and cached collections
+    const dbName = references.databaseName ||
+                   (this.connectionString ? getDBFromConnectionString(this.connectionString) : null);
+
+    if (!dbName || !this._collections[dbName]) {
+      return;
+    }
+
+    const validCollections = this._collections[dbName];
+
+    for (const ref of references.collections) {
+      // Skip if it's a method call on db itself (e.g., db.getCollection)
+      if (['getCollection', 'collection', 'createCollection'].some(m => ref.collectionName === m)) {
+        continue;
+      }
+
+      if (!validCollections.includes(ref.collectionName)) {
+        diagnostics.push({
+          severity: DiagnosticSeverity.Warning,
+          source: 'mongodb',
+          code: DIAGNOSTIC_CODES.nonExistentCollection,
+          range: {
+            start: ref.location.start,
+            end: ref.location.end,
+          },
+          message: `Collection '${ref.collectionName}' does not exist in database '${dbName}'`,
+        });
+      }
+    }
+  }
+
+  private _checkNonExistentFields(
+    references: DiagnosticReferences,
+    diagnostics: Diagnostic[],
+  ): void {
+    for (const ref of references.fields) {
+      if (!ref.collectionName || !ref.databaseName) {
+        continue;
+      }
+
+      const namespace = `${ref.databaseName}.${ref.collectionName}`;
+      const validFields = this._fields[namespace];
+
+      if (!validFields || validFields.length === 0) {
+        continue;
+      }
+
+      // Check if field exists in cached schema
+      // Support nested fields with dot notation
+      const fieldParts = ref.fieldName.split('.');
+      const topLevelField = fieldParts[0];
+
+      const fieldExists = validFields.some(f =>
+        f === ref.fieldName || f.startsWith(topLevelField + '.')
+      );
+
+      if (!fieldExists) {
+        diagnostics.push({
+          severity: DiagnosticSeverity.Information,
+          source: 'mongodb',
+          code: DIAGNOSTIC_CODES.nonExistentField,
+          range: {
+            start: ref.location.start,
+            end: ref.location.end,
+          },
+          message: `Field '${ref.fieldName}' not found in collection '${ref.collectionName}' schema (based on sample document)`,
+        });
+      }
+    }
+  }
+
+  private _checkInvalidOperators(
+    references: DiagnosticReferences,
+    diagnostics: Diagnostic[],
+  ): void {
+    for (const ref of references.operators) {
+      const validOperators = this._getValidOperatorsForContext(ref.context);
+
+      if (!validOperators.includes(ref.operator)) {
+        const contextName = ref.context === 'stage' ? 'aggregation stage' :
+                           ref.context === 'query' ? 'query' :
+                           ref.context === 'aggregation' ? 'aggregation expression' :
+                           'this context';
+
+        diagnostics.push({
+          severity: DiagnosticSeverity.Error,
+          source: 'mongodb',
+          code: ref.context === 'stage'
+                ? DIAGNOSTIC_CODES.invalidStageOperator
+                : DIAGNOSTIC_CODES.invalidQueryOperator,
+          range: {
+            start: ref.location.start,
+            end: ref.location.end,
+          },
+          message: `'${ref.operator}' is not a valid ${contextName} operator`,
+        });
+      }
+    }
+  }
+
+  private _checkUnknownMethods(
+    references: DiagnosticReferences,
+    diagnostics: Diagnostic[],
+  ): void {
+    for (const ref of references.methods) {
+      const validMethods = this._getValidMethodsForTarget(ref.target);
+
+      if (validMethods && !validMethods.includes(ref.method)) {
+        diagnostics.push({
+          severity: DiagnosticSeverity.Warning,
+          source: 'mongodb',
+          code: DIAGNOSTIC_CODES.unknownMethod,
+          range: {
+            start: ref.location.start,
+            end: ref.location.end,
+          },
+          message: `Unknown method '${ref.method}' for ${ref.target === 'db' ? 'database' : 'collection'}`,
+        });
+      }
+    }
+  }
+
+  private _getValidOperatorsForContext(context: 'stage' | 'query' | 'aggregation' | 'other'): string[] {
+    if (context === 'stage') {
+      return getFilteredCompletions({ meta: ['stage'] }).map(item => item.value);
+    } else if (context === 'query') {
+      return getFilteredCompletions({ meta: ['query'] }).map(item => item.value);
+    } else if (context === 'aggregation') {
+      return getFilteredCompletions({ meta: ['expr:*', 'conv', 'accumulator'] }).map(item => item.value);
+    }
+    // For 'other' context, accept all operators to avoid false positives
+    return [];
+  }
+
+  private _getValidMethodsForTarget(target: 'db' | 'collection' | 'cursor' | 'other'): string[] | null {
+    if (target === 'db') {
+      return this._shellSymbolCompletionItems.Database?.map(item => item.label) || null;
+    } else if (target === 'collection') {
+      return this._shellSymbolCompletionItems.Collection?.map(item => item.label) || null;
+    } else if (target === 'cursor') {
+      return this._shellSymbolCompletionItems.Cursor?.map(item => item.label) || null;
+    }
+    return null;
   }
 
   /**
