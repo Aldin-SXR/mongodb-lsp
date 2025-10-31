@@ -214,8 +214,9 @@ function startLanguageServer(connection, config, clientId) {
       connection.client.register(DidChangeConfigurationNotification.type, undefined);
     }
 
-    // Initialize MongoDB connection with current config
-    initializeMongoDBService(activeConfig);
+    // Initialize MongoDB service (without connecting yet - wait for config from client)
+    // Only connect if we have a connection string from CLI/env
+    void initializeMongoDBService(activeConfig, false);
   });
 
   // Handle configuration changes from client
@@ -248,12 +249,14 @@ function startLanguageServer(connection, config, clientId) {
       })}`);
     }
 
-    // Reinitialize MongoDB service with new configuration
-    initializeMongoDBService(activeConfig);
+    // Reinitialize MongoDB service with new configuration and trigger connection
+    void initializeMongoDBService(activeConfig, true);
   });
 
   // Helper to initialize/reinitialize MongoDB service
-  async function initializeMongoDBService(cfg) {
+  // autoConnect: if true, will attempt to connect to MongoDB (used when config changes from client)
+  //              if false, will only initialize the service without connecting (used on initial startup)
+  async function initializeMongoDBService(cfg, autoConnect = false) {
     if (!mongoDBService) {
       if (config.verbose) {
         connection.console.log(`[Client ${clientId}] MongoDB service not yet created, skipping initialization`);
@@ -271,11 +274,11 @@ function startLanguageServer(connection, config, clientId) {
     mongoDBService.initialize(initConfig);
 
     if (cfg.verbose) {
-      connection.console.log(`[Client ${clientId}] MongoDB service initialized with URI: ${cfg.connectionString?.replace(/:[^:@]+@/, ':***@')}`);
+      connection.console.log(`[Client ${clientId}] MongoDB service initialized with URI: ${cfg.connectionString?.replace(/:[^:@]+@/, ':***@') || 'none'}`);
     }
 
-    // Automatically connect to MongoDB if connection string is provided
-    if (cfg.connectionString) {
+    // Only connect if autoConnect is true AND connection string is provided
+    if (autoConnect && cfg.connectionString) {
       try {
         await mongoDBService.activeConnectionChanged({
           connectionId: initConfig.connectionId,
@@ -288,6 +291,8 @@ function startLanguageServer(connection, config, clientId) {
       } catch (error) {
         connection.console.error(`[Client ${clientId}] Failed to connect to MongoDB: ${error.message}`);
       }
+    } else if (cfg.verbose && !cfg.connectionString) {
+      connection.console.log(`[Client ${clientId}] No connection string provided, skipping MongoDB connection`);
     }
   }
 

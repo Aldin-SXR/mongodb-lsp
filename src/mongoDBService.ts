@@ -610,27 +610,60 @@ export default class MongoDBService {
   }
 
   /**
+   * Check if the user has already typed "$" before the cursor
+   */
+  _hasTypedDollarSign(currentLineText: string | undefined, position: { character: number }): boolean {
+    if (!currentLineText || position.character === 0) {
+      return false;
+    }
+
+    // Get text before cursor
+    const textBeforeCursor = currentLineText.substring(0, position.character);
+
+    // Check if the last word starts with "$"
+    // Match word characters after the last non-word character
+    const match = textBeforeCursor.match(/[$\w]+$/);
+
+    return match ? match[0].startsWith('$') : false;
+  }
+
+  /**
    * If the current node is 'db.collection.aggregate([{<trigger>}])'.
    */
   _provideStageCompletionItems(
     state: CompletionState,
+    currentLineText?: string,
+    position?: { line: number; character: number },
   ): CompletionItem[] | undefined {
     if (state.isStage) {
       this._connection.console.log('VISITOR found stage operator completions');
 
+      const hasDollar = position ? this._hasTypedDollarSign(currentLineText, position) : false;
+
       return getFilteredCompletions({ meta: ['stage'] }).map((item) => {
         let snippet = item.value;
+        let insertText = item.value;
+
+        // If user already typed "$", remove it from insertText to avoid duplication
+        if (hasDollar && insertText.startsWith('$')) {
+          insertText = insertText.substring(1);
+        }
 
         if (item.snippet) {
-          const escapedOp = item.value.replace('$', '\\$');
+          const operatorPart = hasDollar && item.value.startsWith('$')
+            ? item.value.substring(1)
+            : item.value;
+          const escapedOp = operatorPart.replace('$', '\\$');
           snippet = `${escapedOp}: ${item.snippet}`;
+          insertText = snippet;
         }
 
         return {
           label: item.value,
           kind: CompletionItemKind.Keyword,
-          insertText: snippet,
+          insertText: insertText,
           insertTextFormat: InsertTextFormat.Snippet,
+          filterText: item.value, // Always filter with $, so both "$mat" and "mat" work
           documentation: this._getAggregationDocumentation({
             operator: item.value,
             description: item.description,
@@ -649,6 +682,8 @@ export default class MongoDBService {
    */
   _provideQueryOperatorCompletionItems(
     state: CompletionState,
+    currentLineText?: string,
+    position?: { line: number; character: number },
   ): CompletionItem[] | undefined {
     if (
       state.stageOperator === MATCH ||
@@ -664,16 +699,27 @@ export default class MongoDBService {
       ];
       this._connection.console.log(message.join(' '));
 
+      const hasDollar = position ? this._hasTypedDollarSign(currentLineText, position) : false;
+
       return getFilteredCompletions({
         fields,
         meta: ['query', 'field:identifier'],
       }).map((item) => {
+        let insertText = item.value;
+
+        // If user already typed "$" and this is an operator, remove it from insertText
+        if (hasDollar && insertText.startsWith('$')) {
+          insertText = insertText.substring(1);
+        }
+
         return {
           label: item.value,
           kind:
             item.meta === 'field:identifier'
               ? CompletionItemKind.Field
               : CompletionItemKind.Keyword,
+          insertText: insertText,
+          filterText: item.value,
           documentation: this._getAggregationDocumentation({
             operator: item.value,
             description: item.description,
@@ -691,6 +737,8 @@ export default class MongoDBService {
    */
   _provideAggregationOperatorCompletionItems(
     state: CompletionState,
+    currentLineText?: string,
+    position?: { line: number; character: number },
   ): CompletionItem[] | undefined {
     if (state.stageOperator) {
       const fields =
@@ -702,6 +750,8 @@ export default class MongoDBService {
         'completions',
       ];
       this._connection.console.log(message.join(' '));
+
+      const hasDollar = position ? this._hasTypedDollarSign(currentLineText, position) : false;
 
       return getFilteredCompletions({
         fields,
@@ -720,12 +770,21 @@ export default class MongoDBService {
             : []),
         ],
       }).map((item) => {
+        let insertText = item.value;
+
+        // If user already typed "$" and this is an operator, remove it from insertText
+        if (hasDollar && insertText.startsWith('$')) {
+          insertText = insertText.substring(1);
+        }
+
         return {
           label: item.value,
           kind:
             item.meta === 'field:identifier'
               ? CompletionItemKind.Field
               : CompletionItemKind.Keyword,
+          insertText: insertText,
+          filterText: item.value,
           documentation: this._getAggregationDocumentation({
             operator: item.value,
             description: item.description,
@@ -1048,9 +1107,9 @@ export default class MongoDBService {
     );
 
     const completionOptions = [
-      this._provideStageCompletionItems.bind(this, state),
-      this._provideQueryOperatorCompletionItems.bind(this, state),
-      this._provideAggregationOperatorCompletionItems.bind(this, state),
+      this._provideStageCompletionItems.bind(this, state, currentLineText, position),
+      this._provideQueryOperatorCompletionItems.bind(this, state, currentLineText, position),
+      this._provideAggregationOperatorCompletionItems.bind(this, state, currentLineText, position),
       this._provideIdentifierObjectValueCompletionItems.bind(this, state),
       this._provideTextObjectValueCompletionItems.bind(this, state),
       this._provideCollectionSymbolCompletionItems.bind(this, state),
@@ -1211,8 +1270,23 @@ export default class MongoDBService {
     const validCollections = this._collections[dbName];
 
     for (const ref of references.collections) {
-      // Skip if it's a method call on db itself (e.g., db.getCollection)
-      if (['getCollection', 'collection', 'createCollection'].some(m => ref.collectionName === m)) {
+      // Skip if it's a method call on db itself (e.g., db.getCollection, db.getMongo, etc.)
+      const dbMethods = [
+        'getCollection', 'collection', 'createCollection', 'getMongo',
+        'getCollectionNames', 'getCollectionInfos', 'getName', 'getSiblingDB',
+        'dropDatabase', 'adminCommand', 'runCommand', 'getUsers', 'getRoles',
+        'currentOp', 'killOp', 'shutdownServer', 'fsyncLock', 'fsyncUnlock',
+        'version', 'serverStatus', 'stats', 'hostInfo', 'serverBuildInfo',
+        'serverBits', 'isMaster', 'hello', 'getProfilingLevel', 'setProfilingLevel',
+        'getProfilingStatus', 'getLastError', 'getLastErrorObj', 'printCollectionStats',
+        'commandHelp', 'listCommands', 'auth', 'logout', 'createUser', 'updateUser',
+        'changeUserPassword', 'dropUser', 'dropAllUsers', 'grantRolesToUser',
+        'revokeRolesFromUser', 'createRole', 'updateRole', 'dropRole', 'dropAllRoles',
+        'grantPrivilegesToRole', 'revokePrivilegesFromRole', 'grantRolesToRole',
+        'revokeRolesFromRole', 'getRole', 'getUser'
+      ];
+
+      if (dbMethods.includes(ref.collectionName)) {
         continue;
       }
 
@@ -1278,7 +1352,8 @@ export default class MongoDBService {
     for (const ref of references.operators) {
       const validOperators = this._getValidOperatorsForContext(ref.context);
 
-      if (!validOperators.includes(ref.operator)) {
+      // Only validate if we have a list of valid operators (skip 'other' context to avoid false positives)
+      if (validOperators.length > 0 && !validOperators.includes(ref.operator)) {
         const contextName = ref.context === 'stage' ? 'aggregation stage' :
                            ref.context === 'query' ? 'query' :
                            ref.context === 'aggregation' ? 'aggregation expression' :
