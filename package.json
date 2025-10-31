@@ -1,0 +1,73 @@
+{
+  "name": "mongodb-lsp",
+  "version": "1.0.0",
+  "description": "Standalone MongoDB Language Server - WebSocket server for LSP-compatible editors and Monaco Editor",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "mongodb-lsp": "./bin/server.js"
+  },
+  "keywords": [
+    "mongodb",
+    "language-server",
+    "lsp",
+    "monaco",
+    "monaco-editor",
+    "vscode-languageserver",
+    "websocket",
+    "autocomplete",
+    "intellisense",
+    "mql",
+    "aggregation"
+  ],
+  "author": "MongoDB",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mongodb-js/mongodb-lsp"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist",
+    "start": "node bin/server.js",
+    "dev": "npm run build && npm start",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@babel/core": "^7.25.8",
+    "@babel/parser": "^7.25.8",
+    "@babel/traverse": "^7.25.7",
+    "@mongodb-js/mongodb-constants": "^0.16.0",
+    "@mongosh/browser-runtime-electron": "^3.24.0",
+    "@mongosh/i18n": "^2.16.0",
+    "@mongosh/service-provider-core": "^3.6.0",
+    "@mongosh/service-provider-node-driver": "^3.17.1",
+    "@mongosh/shell-api": "^3.23.0",
+    "bson": "^6.10.4",
+    "mongodb": "^6.20.0",
+    "mongodb-build-info": "^1.7.2",
+    "mongodb-connection-string-url": "^3.0.2",
+    "mongodb-schema": "^12.6.3",
+    "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.12",
+    "vscode-ws-jsonrpc": "^3.3.2",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@babel/types": "^7.25.8",
+    "@types/babel__traverse": "^7.20.6",
+    "@types/node": "^20.19.0",
+    "@types/ws": "^8.5.12",
+    "typescript": "^5.9.2"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "README.md",
+    "LICENSE"
+  ]
+}

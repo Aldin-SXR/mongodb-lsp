@@ -1,0 +1,16 @@
+{
+  "// MongoDB Connection": "Configuration for connecting to MongoDB",
+  "connectionString": "mongodb://localhost:27017",
+
+  "// Connection Options": "Optional MongoDB connection options",
+  "connectionOptions": {
+    "serverSelectionTimeoutMS": 5000,
+    "connectTimeoutMS": 10000
+  },
+
+  "// Logging": "Enable verbose logging",
+  "verbose": false,
+
+  "// Advanced Options": "Advanced configuration",
+  "maxNumberOfProblems": 100
+}
