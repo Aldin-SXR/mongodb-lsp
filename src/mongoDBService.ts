@@ -707,8 +707,11 @@ export default class MongoDBService {
       }).map((item) => {
         let insertText = item.value;
 
-        // If user already typed "$" and this is an operator, remove it from insertText
-        if (hasDollar && insertText.startsWith('$')) {
+        // If it's a field (not an operator), wrap in quotes
+        if (item.meta === 'field:identifier') {
+          insertText = `"${item.value}"`;
+        } else if (hasDollar && insertText.startsWith('$')) {
+          // If user already typed "$" and this is an operator, remove it from insertText
           insertText = insertText.substring(1);
         }
 
@@ -772,8 +775,11 @@ export default class MongoDBService {
       }).map((item) => {
         let insertText = item.value;
 
-        // If user already typed "$" and this is an operator, remove it from insertText
-        if (hasDollar && insertText.startsWith('$')) {
+        // If it's a field (not an operator), wrap in quotes
+        if (item.meta === 'field:identifier') {
+          insertText = `"${item.value}"`;
+        } else if (hasDollar && insertText.startsWith('$')) {
+          // If user already typed "$" and this is an operator, remove it from insertText
           insertText = insertText.substring(1);
         }
 
