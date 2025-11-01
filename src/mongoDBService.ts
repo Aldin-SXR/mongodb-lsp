@@ -1362,15 +1362,19 @@ export default class MongoDBService {
       if (validOperators.length > 0 && !validOperators.includes(ref.operator)) {
         const contextName = ref.context === 'stage' ? 'aggregation stage' :
                            ref.context === 'query' ? 'query' :
-                           ref.context === 'aggregation' ? 'aggregation expression' :
+                           ref.context === 'aggregation' ? 'aggregation expression/accumulator' :
                            'this context';
+
+        const diagnosticCode = ref.context === 'stage'
+                ? DIAGNOSTIC_CODES.invalidStageOperator
+                : ref.context === 'aggregation'
+                ? DIAGNOSTIC_CODES.invalidOperator
+                : DIAGNOSTIC_CODES.invalidQueryOperator;
 
         diagnostics.push({
           severity: DiagnosticSeverity.Error,
           source: 'mongodb',
-          code: ref.context === 'stage'
-                ? DIAGNOSTIC_CODES.invalidStageOperator
-                : DIAGNOSTIC_CODES.invalidQueryOperator,
+          code: diagnosticCode,
           range: {
             start: ref.location.start,
             end: ref.location.end,
@@ -1409,7 +1413,17 @@ export default class MongoDBService {
     } else if (context === 'query') {
       return getFilteredCompletions({ meta: ['query'] }).map(item => item.value);
     } else if (context === 'aggregation') {
-      return getFilteredCompletions({ meta: ['expr:*', 'conv', 'accumulator'] }).map(item => item.value);
+      // Include all aggregation expression operators and accumulators
+      return getFilteredCompletions({
+        meta: [
+          'expr:*',
+          'conv',
+          'accumulator',
+          'accumulator:bottom-n',
+          'accumulator:top-n',
+          'accumulator:window',
+        ]
+      }).map(item => item.value);
     }
     // For 'other' context, accept all operators to avoid false positives
     return [];

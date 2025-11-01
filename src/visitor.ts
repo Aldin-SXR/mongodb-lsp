@@ -897,15 +897,49 @@ export class Visitor {
 
           // Check if it's an operator (starts with $)
           if (keyName.startsWith('$')) {
-            // Determine context
+            // Determine context more accurately
             let context: 'stage' | 'query' | 'aggregation' | 'other' = 'other';
 
-            // Check if we're in an array (likely aggregate pipeline)
-            let parentArray = path.findParent(p => p.node.type === 'ArrayExpression');
+            // Find if we're directly in a pipeline array (stage) vs nested deeper (aggregation/query)
+            const parentArray = path.findParent(p => p.node.type === 'ArrayExpression');
+
             if (parentArray) {
-              context = 'stage';
+              // We're inside an array - check if this is a direct pipeline stage or nested
+              // Navigate up to see if we're a direct child of the array
+              let currentPath = path;
+              let depth = 0;
+
+              while (currentPath && currentPath.node !== parentArray.node) {
+                if (currentPath.node.type === 'ObjectExpression') {
+                  depth++;
+                }
+                currentPath = currentPath.parentPath as NodePath;
+              }
+
+              // If depth is 1, we're a direct property of a pipeline stage object (this is a stage operator)
+              // If depth > 1, we're nested inside a stage (this is likely an aggregation operator)
+              if (depth === 1) {
+                context = 'stage';
+              } else {
+                // Check if we're inside a stage that uses aggregation operators
+                // Look for parent object properties to find the stage operator
+                let stageContext = path.findParent((p) => {
+                  if (p.node.type === 'ObjectProperty') {
+                    const objProp = p.node as t.ObjectProperty;
+                    if (objProp.key.type === 'Identifier') {
+                      const stageName = objProp.key.name;
+                      // Stages that use accumulator/aggregation operators
+                      return ['$group', '$project', '$addFields', '$set', '$bucket',
+                              '$bucketAuto', '$facet', '$setWindowFields'].includes(stageName);
+                    }
+                  }
+                  return false;
+                });
+
+                context = stageContext ? 'aggregation' : 'query';
+              }
             } else {
-              // Check if it's inside a value object (query operator)
+              // Not in an array - likely a query operator
               const parentProp = path.findParent(p => p.node.type === 'ObjectProperty');
               if (parentProp) {
                 context = 'query';
