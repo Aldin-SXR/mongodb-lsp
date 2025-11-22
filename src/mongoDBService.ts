@@ -200,8 +200,10 @@ export default class MongoDBService {
     try {
       // Get database names for the current connection.
       const databases = await this._getDatabases();
-      // Create and cache database completion items.
-      this._cacheDatabaseCompletionItems(databases);
+      // Create and cache database completion items only if we have a list.
+      if (databases && databases.length > 0) {
+        this._cacheDatabaseCompletionItems(databases);
+      }
     } catch (error) {
       this._connection.console.error(
         `LS get databases error: ${util.inspect(error)}`,
@@ -346,12 +348,14 @@ export default class MongoDBService {
 
   /**
    * Get database names for the current connection.
+   * Returns null if the service provider is not ready or if an error occurs.
    */
-  async _getDatabases(): Promise<Document[]> {
-    let result: Document[] = [];
-
+  async _getDatabases(): Promise<Document[] | null> {
     if (!this._serviceProvider) {
-      return [];
+      this._connection.console.log(
+        'LS get databases skipped: service provider not initialized',
+      );
+      return null;
     }
 
     try {
@@ -359,46 +363,48 @@ export default class MongoDBService {
       // Use `admin` as arguments to get list of dbs
       // and remove it later when `mongosh` will merge a fix.
       const documents = await this._serviceProvider.listDatabases('admin');
-      result = documents.databases ?? [];
+      return documents.databases ?? [];
     } catch (error) {
       this._connection.console.error(`LS get databases error: ${error}`);
+      return null;
     }
-
-    return result;
   }
 
   /**
    * Get collection names for the provided database name.
+   * Returns null if the service provider is not ready or if an error occurs.
    */
-  async _getCollections(databaseName: string): Promise<Document[]> {
-    let result: Document[] = [];
-
+  async _getCollections(databaseName: string): Promise<Document[] | null> {
     if (!this._serviceProvider) {
-      return [];
+      this._connection.console.log(
+        'LS get collections skipped: service provider not initialized',
+      );
+      return null;
     }
 
     try {
       const documents =
         await this._serviceProvider.listCollections(databaseName);
-      result = documents ? documents : [];
+      return documents ?? [];
     } catch (error) {
       this._connection.console.error(`LS get collections error: ${error}`);
+      return null;
     }
-
-    return result;
   }
 
   /**
    * Get field names for the provided namespace.
+   * Returns null if the service provider is not ready or if an error occurs.
    */
   async _getSchemaFields(
     databaseName: string,
     collectionName: string,
-  ): Promise<string[]> {
-    let result: string[] = [];
-
+  ): Promise<string[] | null> {
     if (!this._serviceProvider) {
-      return [];
+      this._connection.console.log(
+        'LS get schema fields skipped: service provider not initialized',
+      );
+      return null;
     }
 
     try {
@@ -417,12 +423,11 @@ export default class MongoDBService {
         .toArray();
 
       const schema = await parseSchema(documents);
-      result = schema?.fields ? schema.fields.map((item) => item.name) : [];
+      return schema?.fields ? schema.fields.map((item) => item.name) : [];
     } catch (error) {
       this._connection.console.error(`LS get schema fields error: ${error}`);
+      return null;
     }
-
-    return result;
   }
 
   /**
@@ -589,8 +594,12 @@ export default class MongoDBService {
       // Get collection names for the current database.
       const collections = await this._getCollections(currentDatabaseName);
 
-      // Create and cache collection completion items.
-      this._cacheCollections(currentDatabaseName, collections);
+      // Only cache collections if we actually received a list.
+      // If the list is empty or null (e.g. connection not ready or transient error),
+      // avoid caching so that we can retry on the next completion request.
+      if (collections && collections.length > 0) {
+        this._cacheCollections(currentDatabaseName, collections);
+      }
     }
 
     if (currentDatabaseName && currentCollectionName) {
@@ -603,8 +612,10 @@ export default class MongoDBService {
           currentCollectionName,
         );
 
-        // Create and cache field completion items.
-        this.cacheFields(namespace, schemaFields);
+        // Only cache fields if we actually received a list.
+        if (schemaFields && schemaFields.length > 0) {
+          this.cacheFields(namespace, schemaFields);
+        }
       }
     }
   }
